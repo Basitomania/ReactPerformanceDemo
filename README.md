@@ -79,15 +79,6 @@ This demo currently shows the naive implementation. Future versions will include
 - **State management** optimizations
 - **Bundle analysis** and optimization
 
-## 🤝 Contributing
-
-This is an educational project. Feel free to:
-
-- Add more performance examples
-- Improve the UI/UX
-- Add more detailed performance metrics
-- Create additional optimization examples
-
 ## 📖 Related Articles
 
 This project is part of a series of articles about React performance optimization. Check out the accompanying articles for detailed explanations of each optimization technique.
