@@ -1,11 +1,11 @@
-const ProductDetails = ({
+const ProductDetails =({
   id,
   onClose,
 }: {
   id: number;
   onClose: () => void;
 }) => {
-  // Pretend this is heavy (charts, images, etc.) —
+  // Pretend this is heavy (charts, images, etc.) — it’s lazy-loaded
   return (
     <div
       role="dialog"
@@ -30,11 +30,14 @@ const ProductDetails = ({
         }}
       >
         <h2>Product {id} details</h2>
-        <p>This a naive modal</p>
+        <p>
+          This modal is code-split with <code>React.lazy</code> so the main list
+          loads fast.
+        </p>
         <button onClick={onClose}>Close</button>
       </div>
     </div>
   );
-};
+}
 
 export default ProductDetails;

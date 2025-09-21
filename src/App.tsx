@@ -1,5 +1,16 @@
-import { useState } from "react";
-import ProductDetails from "./ProductDetails";
+import React, {
+  useMemo,
+  useState,
+  useDeferredValue,
+  useTransition,
+  useCallback,
+  Suspense,
+  lazy,
+} from "react";
+import {
+  FixedSizeList as VirtualList,
+  ListChildComponentProps,
+} from "react-window";
 
 type Item = { id: number; name: string; price: number; category: string };
 const CATEGORIES = ["Hardware", "Software", "Books", "Accessories"];
@@ -14,48 +25,61 @@ const createItems = (n = 10_000): Item[] => {
     price: rand(5, 500),
     category: CATEGORIES[i % CATEGORIES.length],
   }));
-};
+}
 
-// --- Naïve row: always re-renders when parent changes ---
-const NaiveRow = ({
+// Heavy details panel (code-split demo)
+const ProductDetails = lazy(() => import("./ProductDetails"));
+
+// --- Optimized row: memoized + cheap props ---
+const OptimizedRow = React.memo(function OptimizedRow({
   item,
   isFavorite,
   onToggle,
-  onOpen,
+  style,
 }: {
   item: Item;
   isFavorite: boolean;
   onToggle: (id: number) => void;
-  onOpen: (id: number) => void;
-}) => {
-  // pretend-expensive derived calculation done on every render
-  const cents = Array.from({ length: 500 }).reduce(
-    (acc: number) => acc + item.price,
-    0
-  ); // silly CPU work
-  const handleOpen = () => onOpen(item.id);
+  style?: React.CSSProperties;
+}) {
+  // move the “expensive” derived calc behind a memo tied to stable input
+  const fakeCalc = useMemo(() => {
+    let acc = 0;
+    for (let i = 0; i < 500; i++) acc += item.price;
+    return acc % 7;
+  }, [item.price]);
+
   return (
     <div
       style={{
+        ...style,
         display: "flex",
         gap: 12,
         padding: 6,
         borderBottom: "1px solid #eee",
-        justifyContent: "space-between",
+        alignItems: "center",
       }}
-      onClick={handleOpen}
     >
-      <strong>{item.name}</strong>
-      <span>£{item.price}</span>
-      <span>{item.category}</span>
+      <strong
+        style={{
+          flex: 1,
+          minWidth: 0,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {item.name}
+      </strong>
+      <span style={{ width: 70, textAlign: "right" }}>£{item.price}</span>
+      <span style={{ width: 110 }}>{item.category}</span>
       <button onClick={() => onToggle(item.id)}>
         {isFavorite ? "★" : "☆"}
       </button>
-      {/* use the derived var to keep TS happy so it isn’t DCE’d */}
-      <span style={{ opacity: 0.3, fontSize: 12 }}>calc:{cents % 7}</span>
+      <span style={{ opacity: 0.3, fontSize: 12 }}>calc:{fakeCalc}</span>
     </div>
   );
-};
+});
 
 const App = () => {
   // shared dataset
@@ -65,26 +89,42 @@ const App = () => {
   const [sortBy, setSortBy] = useState<"name" | "price">("name");
   const [showDetailsFor, setShowDetailsFor] = useState<number | null>(null);
 
-  // NAÏVE: state handlers that change every render
-  const naiveToggle = (id: number) => {
-    const next = new Set(favorites);
-    next.has(id) ? next.delete(id) : next.add(id);
-    setFavorites(next);
-  };
+  // OPTIMIZED: stable handler + immutable Set updates
+  const optToggle = useCallback((id: number) => {
+    setFavorites((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }, []);
 
-  // NAÏVE: synchronous state update blocks UI during expensive sort
+  // make typing feel snappy for filtering
+  const deferredSearch = useDeferredValue(search);
+
+  // prefer transitions for expensive sorts (keeps input responsive)
+  const [isPending, startTransition] = useTransition();
   const changeSort = (key: "name" | "price") => {
-    setSortBy(key);
+    startTransition(() => setSortBy(key));
   };
 
-  // NAÏVE: filtered + sorted computed inline = re-runs every keypress + renders huge list each time
-  const naiveList = items
-    .filter((it) => it.name.toLowerCase().includes(search.toLowerCase()))
-    .sort((a, b) =>
+  // OPTIMIZED: derived data memoized + based on deferred input
+  const optimizedList = useMemo(() => {
+    const q = deferredSearch.toLowerCase();
+    const base = q
+      ? items.filter((it) => it.name.toLowerCase().includes(q))
+      : items;
+    const sorted = [...base].sort((a, b) =>
       sortBy === "name" ? a.name.localeCompare(b.name) : a.price - b.price
     );
+    return sorted;
+  }, [items, deferredSearch, sortBy]);
 
-  const total = naiveList.reduce((acc, item) => acc + item.price, 0);
+  // cheap aggregate: memoize too
+  const total = useMemo(
+    () => optimizedList.reduce((sum, i) => sum + i.price, 0),
+    [optimizedList]
+  );
+
   return (
     <div
       style={{
@@ -120,45 +160,74 @@ const App = () => {
             <option value="price">Price</option>
           </select>
         </label>
+        {isPending && <span style={{ opacity: 0.7 }}>sorting…</span>}
       </section>
+
       <details open style={{ marginTop: 16 }}>
         <summary style={{ cursor: "pointer" }}>
-          1) Naïve list (map all items, no guards)
+          2) Optimized list (memoized, virtualized, stable handlers, deferred
+          input)
         </summary>
         <div
           style={{
             border: "1px solid #ddd",
             borderRadius: 8,
             marginTop: 8,
-            maxHeight: 320,
-            overflow: "auto",
+            height: 320,
           }}
         >
-          {naiveList.map((item) => (
-            <NaiveRow
-              key={item.id}
-              item={item}
-              isFavorite={favorites.has(item.id)}
-              onToggle={naiveToggle}
-              onOpen={setShowDetailsFor}
-            />
-          ))}
+          {/* Virtualization: only ~10-12 rows render at a time */}
+          <VirtualList
+            height={320}
+            itemCount={optimizedList.length}
+            itemSize={44}
+            width={"100%"}
+            itemData={{
+              list: optimizedList,
+              favorites,
+              toggle: optToggle,
+              open: setShowDetailsFor,
+            }}
+          >
+            {RowRenderer}
+          </VirtualList>
+        </div>
+        <div style={{ marginTop: 12, display: "flex", gap: 16 }}>
+          <strong>Count: {optimizedList.length.toLocaleString()}</strong>
+          <strong>Total £: {total.toLocaleString()}</strong>
         </div>
       </details>
 
-      <div style={{ marginTop: 12, display: "flex", gap: 16 }}>
-        <strong>Count: {naiveList.length.toLocaleString()}</strong>
-        <strong>Total £: {total.toLocaleString()}</strong>
-      </div>
-
-      {showDetailsFor && (
-        <ProductDetails
-          id={showDetailsFor}
-          onClose={() => setShowDetailsFor(null)}
-        />
-      )}
+      <Suspense
+        fallback={<div style={{ marginTop: 12 }}>Loading details…</div>}
+      >
+        {showDetailsFor && (
+          <ProductDetails
+            id={showDetailsFor}
+            onClose={() => setShowDetailsFor(null)}
+          />
+        )}
+      </Suspense>
     </div>
   );
 };
 
 export default App;
+
+// react-window row renderer (memo by default via child function + stable itemData usage)
+const RowRenderer = React.memo(function RowRenderer({
+  index,
+  style,
+  data,
+}: ListChildComponentProps) {
+  const item: Item = data.list[index];
+  const isFavorite = (data.favorites as Set<number>).has(item.id);
+  const onToggle = data.toggle as (id: number) => void;
+  const open = data.open as (id: number) => void;
+
+  return (
+    <div style={style} onDoubleClick={() => open(item.id)}>
+      <OptimizedRow item={item} isFavorite={isFavorite} onToggle={onToggle} />
+    </div>
+  );
+});
